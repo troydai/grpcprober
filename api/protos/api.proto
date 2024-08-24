@@ -11,6 +11,6 @@ message SignalResponse {
   map<string, string> details = 10;
 }
 
-service Beacon {
+service BeaconService {
   rpc Signal(SignalRequest) returns (SignalResponse) {}
 }

@@ -4,9 +4,14 @@ import (
 	"context"
 	"crypto/x509"
 	"log"
+	"os"
+	"os/signal"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/keepalive"
 
 	pb "github.com/troydai/grpcprober/gen/api/protos"
 )
@@ -31,12 +36,14 @@ OFCuIvDRtq6U6j20s/e0rno4lkiuc7MblNRWkKeIuEtu1nYfyjaBsszI6FfgKrlm
 -----END CERTIFICATE-----`
 
 func main() {
-	// Set up a connection to the gRPC server.
-	certPool := x509.NewCertPool()
-	certPool.AppendCertsFromPEM([]byte(_beaconDemoCert))
-
-	transportCred := credentials.NewClientTLSFromCert(certPool, "")
-	conn, err := grpc.NewClient("localhost:8080", grpc.WithTransportCredentials(transportCred))
+	conn, err := grpc.NewClient(
+		"localhost:8080",
+		grpc.WithTransportCredentials(getTransportCredential()),
+		grpc.WithKeepaliveParams(keepalive.ClientParameters{
+			Time:                10 * time.Second,
+			PermitWithoutStream: true,
+		}),
+	)
 	if err != nil {
 		log.Fatalf("Failed to connect: %v", err)
 	}
@@ -45,12 +52,41 @@ func main() {
 	// Create a new gRPC client for the beacon service.
 	client := pb.NewBeaconServiceClient(conn)
 
-	// Make a gRPC request to the beacon service.
-	response, err := client.Signal(context.Background(), &pb.SignalRequest{})
-	if err != nil {
-		log.Fatalf("Failed to get beacon: %v", err)
+	exit := make(chan struct{})
+
+	go func() {
+		defer close(exit)
+		term := make(chan os.Signal, 1)
+		signal.Notify(term, os.Interrupt)
+
+		<-term
+	}()
+
+	t := time.NewTicker(10 * time.Minute)
+	for {
+		// Make a gRPC request to the beacon service.
+		response, err := client.Signal(context.Background(), &pb.SignalRequest{})
+		if err != nil {
+			log.Fatalf("Failed to get beacon: %v", err)
+		}
+
+		// Process the response from the beacon service.
+		log.Printf("Received beacon: %v", response.GetDetails())
+
+		select {
+		case <-exit:
+			return
+		case <-t.C:
+		}
+	}
+}
+
+func getTransportCredential() credentials.TransportCredentials {
+	if os.Getenv("PROBER_TLS") == "true" {
+		certPool := x509.NewCertPool()
+		certPool.AppendCertsFromPEM([]byte(_beaconDemoCert))
+		return credentials.NewClientTLSFromCert(certPool, "")
 	}
 
-	// Process the response from the beacon service.
-	log.Printf("Received beacon: %v", response.GetDetails())
+	return insecure.NewCredentials()
 }
